@@ -107,7 +107,7 @@ cp re-cs-02.config .config && make defconfig
 | 东西 | 从哪来 | 备注 |
 |---|---|---|
 | NSS Wi-Fi 驱动、PPE/EDMA 改动、ath11k 补丁 | ppe-nss 变基分支本体 | 不是包，别指望 feed |
-| `nss-firmware` | `nss-packages` 的 `ppe-nss` 分支 | 唯一从 nss feed 拿的包 |
+| `nss-firmware` | `nss-packages` 的 `ppe-nss` 分支 | 唯一从 nss feed 拿的包，**必须显式 `feeds install`**：树内 `nss-wifi-drv` 依赖它，漏装时不报错，直到组 rootfs 才 `apk: nss-firmware (no such package)` |
 | `nss-wifi` 配置 | `package/kernel/nss-wifi-drv` | 树内 |
 | `luci-theme-aurora` | `eamonxg/luci-theme-aurora`，clone 到 `package/` | **不在 luci feed 里**，之前就是因此被静默丢弃 |
 | zh-cn 翻译 | luci feed，由 `CONFIG_LUCI_LANG_zh_Hans=y` 生成 | 不再逐个写 `luci-i18n-*-zh-cn` |

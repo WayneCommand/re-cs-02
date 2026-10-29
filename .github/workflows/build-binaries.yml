@@ -71,7 +71,13 @@ jobs:
             luci luci-app-firewall luci-app-sqm luci-app-https-dns-proxy \
             luci-proto-wireguard luci-app-openclash \
             sqm-scripts https-dns-proxy htop \
-            openssh-server openssh-sftp-server wireguard-tools
+            openssh-server openssh-sftp-server wireguard-tools \
+            nss-firmware
+          # kmod-nss-wifi-drv (in-tree) depends on the feed package
+          # nss-firmware; if it is not installed as a source dir, kconfig
+          # warns "has a dependency on 'nss-firmware', which does not exist"
+          # and apk fails later at package/install with "no such package".
+          test -e package/feeds/nss/nss-firmware
 
       - name: Restore dl cache
         uses: actions/cache@v4

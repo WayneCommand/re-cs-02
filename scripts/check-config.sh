@@ -18,6 +18,7 @@ for sym in \
 	CONFIG_CCACHE \
 	CONFIG_LUCI_LANG_zh_Hans \
 	CONFIG_PACKAGE_kmod-nss-wifi-drv \
+	CONFIG_PACKAGE_nss-firmware \
 	CONFIG_ATH11K_NSS_WIFI \
 	CONFIG_PACKAGE_wpad-openssl \
 	CONFIG_PACKAGE_luci-theme-aurora \
