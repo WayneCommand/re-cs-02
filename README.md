@@ -81,6 +81,57 @@ cp re-cs-02.config .config && make defconfig
 | `openssh-server` + `openssh-sftp-server` | OpenSSH（dropbear 仍是默认包） |
 | `htop` | 交互式进程查看 |
 
+## NSS / PPE 硬件加速
+
+目标：Wi-Fi 数据面跑在 NSS 协处理器上，转发不吃 CPU。
+
+### 为什么换底座，而不是加个 feed
+
+`openwrt-ppe-nss`（`JuliusBairaktaris/openwrt-ppe-nss`，分支 `ppe-nss`）不是插件包，它是 **openwrt main 的整棵变基分支**：在上游 `qca_edma` / `qca_ppe` 驱动之上，加了 NSS 的 DTS 节点、让 NSS 固件与主机共享 EDMA/PPE 的驱动改动、`nss-wifi-drv`（树内，`package/kernel/nss-wifi-drv`），以及把 ath11k 的数据面 ring 交给 NSS 的 mac80211/ath11k 补丁。这些都在内核和无线驱动层，feed 里的 `.ipk` 无法提供——所以只能换构建底座，而不是"优雅地打补丁"。
+
+真正从 feed 拿的只有 `nss-firmware` 一个包（`nss-packages` 的 `ppe-nss` 分支）。
+
+### 集成方式
+
+本仓库仍然只负责**配置 + CI**，底座换成变基分支，所以结构不变：
+
+| 位置 | 作用 |
+|---|---|
+| `re-cs-02.config` | 目标 + 包选择，多了三条 NSS 符号 |
+| `.github/workflows/build-binaries.yml` | clone ppe-nss（钉 commit）、挂 `nss` feed、把 `files/` 覆盖层塞进镜像 |
+| `files/etc/uci-defaults/20-nss-offload` | 首启打开 fw4 硬件 flow offload（PPE）、显式打开 Wi-Fi offload |
+
+NSS 三条符号：
+
+| 选项 | 作用 |
+|---|---|
+| `CONFIG_PACKAGE_kmod-nss-wifi-drv` | 树内 NSS Wi-Fi 驱动：拉起 NSS 固件、接管 ath11k 的 ring |
+| `CONFIG_ATH11K_NSS_WIFI` | ath11k 侧的 offload 代码路径 |
+| `wpad-openssl`（替换 `wpad-basic-mbedtls`） | 官方 seed 用的组合，`wpad-basic` 功能不全 |
+
+### 验证
+
+```sh
+logread -e nss-wifi                       # bring-up 过程，失败会落在这里
+grep -c HW_OFFLOAD /proc/net/nf_conntrack # >0 表示有线流已经进 PPE
+uci get nss-wifi.general.offload          # 1 = Wi-Fi offload 开
+```
+
+关闭 Wi-Fi offload（出问题时的回退）：
+
+```sh
+uci set nss-wifi.general.offload='0'; uci commit nss-wifi; reboot
+```
+
+### 必须知道的坑
+
+1. **IPQ60xx 在作者那里"完全没测过"**（测试机是 AX3600）；RE-CS-02 更没有专门验证。能编出来 ≠ 能跑起来，先刷到 U 盘/备份分区再试。
+2. **SQM 与 offload 打架**。装了 `sqm-scripts` 走 cake/ifb 时，已经 offload 的流根本不过 ifb，限速看起来"失效"。要真限速得用 PPE 自己的 shaper：`hw_ppe.qos`（在 `Qualcommax_NSS_Builder` 里，是对 `sqm-scripts` 的补丁，stock feeds 没有），或者用 `qca-ppe-qos` + `luci-app-qca-ppe-qos`（需要一个 luci fork）。
+3. **OpenClash / 任何 tproxy 流量不会被加速**。透明代理把连接拉回用户态，`nft` 规则对这些连接生效，也就绕开了 flowtable。这是预期行为，不是配置错了。
+4. **NSS 固件是闭源 blob**，随固件再分发有许可风险；自己用没问题，别公开分发带固件的镜像。
+5. **mesh 需要固件 11.4**：默认启动的是 12.5，11.4 是最后支持 802.11s 的版本，两者都打包在镜像里。
+6. 从 mainline 版 sysupgrade 过来建议 `sysupgrade -n`，内核模块版本全变了，保留配置容易卡在半启动。
+
 ## 可以自行调整的地方
 
 **加软件包** —— 在对应分组加一行 `CONFIG_PACKAGE_xxx=y` 即可，`+` 声明的依赖由 kconfig 自动 `select`，不用手写 `kmod-*`/`lib*`。例如 `luci-app-upnp`、`luci-app-ddns`、`luci-app-diskman`、`samba4-server`。
@@ -119,13 +170,13 @@ cp re-cs-02.config .config && make defconfig
    cp re-cs-02.config .config && make defconfig
    ```
 
-2. **版本必须是 OpenWrt main（或含该机型提交的版本）**。RE-CS-02 支持是 2026-01 才进 main 的（commit `53a8e7b`，PR #19840），没有 backport 到 25.12 稳定分支——在 v25.12.x 上 `make defconfig` 会把 `..._DEVICE_jdcloud_re-cs-02` 当未知符号丢掉，最后编出空目标。稳定的做法是把 workflow 里的 clone 钉到某个 commit：
+2. **底座必须是 ppe-nss 分支**。RE-CS-02 支持是 2026-01 才进 main 的（commit `53a8e7b`，PR #19840），没 backport 到 25.12 稳定分支；而 NSS 的符号又只在 ppe-nss 变基分支里。换句话说：v25.12.x 编不出来（设备符号未知，被静默丢掉），openwrt main 编得出来但没有 offload。workflow 里钉的是 ppe-nss 的 commit SHA，升级时：
 
    ```sh
-   git clone https://git.openwrt.org/openwrt/openwrt.git --depth=1
-   # 或者钉版本：
-   # git fetch --depth=1 origin <commit> && git checkout FETCH_HEAD
+   git fetch origin && git reset --hard origin/ppe-nss   # 分支常被 rebase，不要 git pull
    ```
+
+   然后把新的 SHA 填回 workflow 的 `PPE_NSS_COMMIT`。NSS 符号还存在但没编进固件，通常是忘了挂 `nss` feed。
 
 3. 想重新生成最小配置，让 buildroot 自己算（比手工删更可靠，不需要编译）：
 
@@ -142,7 +193,7 @@ cp re-cs-02.config .config && make defconfig
    diff -u /tmp/old.expanded /tmp/new.expanded
    ```
 
-5. 构建见 `.github/workflows/build-binaries.yml`（OpenWrt main，额外引入 OpenClash feed）。产物在 `bin/targets/qualcommax/ipq60xx/`：
+5. 构建见 `.github/workflows/build-binaries.yml`（ppe-nss 底座 + OpenClash feed + nss feed）。产物在 `bin/targets/qualcommax/ipq60xx/`：
 
    - `*-squashfs-sysupgrade.bin` —— 已经在跑 OpenWrt 时升级用，或 TFTP 进去之后 sysupgrade
    - `*-initramfs*.itb` —— 首次刷机用，重命名为 `initramfs.itb` 放到 TFTP 服务器，U-Boot 里 `tftpboot initramfs.itb && bootm`

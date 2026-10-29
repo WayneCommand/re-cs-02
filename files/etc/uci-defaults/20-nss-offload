@@ -1,0 +1,15 @@
+#!/bin/sh
+# First-boot defaults for the NSS/PPE build. OpenWrt copies files/ into the
+# image root, so this runs once after the rootfs is mounted read-write.
+
+# Wired offload: fw4 programs the PPE flowtable.
+uci -q set firewall.@defaults[0].flow_offloading='1'
+uci -q set firewall.@defaults[0].flow_offloading_hw='1'
+uci -q commit firewall
+
+# Wi-Fi offload: nss-wifi-drv is on by default, set it explicitly so the
+# setting survives a config reset. Turn off with offload='0' + reboot.
+uci -q set nss-wifi.general.offload='1'
+uci -q commit nss-wifi
+
+exit 0
