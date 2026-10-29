@@ -68,11 +68,11 @@ cp re-cs-02.config .config && make defconfig
 | 选项 | 作用 |
 |---|---|
 | `luci` | Web 管理界面（元包，带 base/mod-* 一整套） |
-| `luci-theme-aurora` | 界面主题 |
+| `luci-theme-aurora` | 界面主题（不在 luci feed，CI 里 clone 到 `package/`） |
 | `luci-app-sqm` + `sqm-scripts` | SQM 流量整形，缓解 bufferbloat |
 | `luci-app-https-dns-proxy` + `https-dns-proxy` | DoH 加密 DNS |
 | `luci-app-openclash` | OpenClash 代理面板 |
-| `luci-i18n-base/firewall/sqm-zh-cn` | 对应界面的简体中文翻译 |
+| `CONFIG_LUCI_LANG_zh_Hans` | 简体中文：给每个已装的 luci 应用自动生成 `luci-i18n-<app>-zh-cn`（比逐个写包名抗版本变化） |
 
 ### 其它
 
@@ -98,8 +98,20 @@ cp re-cs-02.config .config && make defconfig
 | 位置 | 作用 |
 |---|---|
 | `re-cs-02.config` | 目标 + 包选择，多了三条 NSS 符号 |
-| `.github/workflows/build-binaries.yml` | clone ppe-nss（钉 commit）、挂 `nss` feed、把 `files/` 覆盖层塞进镜像 |
+| `.github/workflows/build-binaries.yml` | clone ppe-nss（钉 commit）、写 `feeds.conf`、按需装包、把 `files/` 覆盖层塞进镜像 |
 | `files/etc/uci-defaults/20-nss-offload` | 首启打开 fw4 硬件 flow offload（PPE）、显式打开 Wi-Fi offload |
+| `scripts/check-config.sh` | defconfig 之后校验期望符号，被静默丢弃就 fail |
+
+### 依赖来源（flaky 点都在这里）
+
+| 东西 | 从哪来 | 备注 |
+|---|---|---|
+| NSS Wi-Fi 驱动、PPE/EDMA 改动、ath11k 补丁 | ppe-nss 变基分支本体 | 不是包，别指望 feed |
+| `nss-firmware` | `nss-packages` 的 `ppe-nss` 分支 | 唯一从 nss feed 拿的包 |
+| `nss-wifi` 配置 | `package/kernel/nss-wifi-drv` | 树内 |
+| `luci-theme-aurora` | `eamonxg/luci-theme-aurora`，clone 到 `package/` | **不在 luci feed 里**，之前就是因此被静默丢弃 |
+| zh-cn 翻译 | luci feed，由 `CONFIG_LUCI_LANG_zh_Hans=y` 生成 | 不再逐个写 `luci-i18n-*-zh-cn` |
+| `luci-app-openclash` | `vernesong/OpenClash` feed | |
 
 NSS 三条符号：
 
@@ -166,9 +178,13 @@ uci set nss-wifi.general.offload='0'; uci commit nss-wifi; reboot
 1. **必须先装 feeds 再跑 defconfig**，顺序反了 feed 里的符号（如 `luci-app-openclash`）会被当成未知符号静默丢弃：
 
    ```sh
-   ./scripts/feeds update -a && ./scripts/feeds install -a
+   ./scripts/feeds update -a
+   ./scripts/feeds install luci luci-app-sqm ...   # 见 workflow 里的清单
    cp re-cs-02.config .config && make defconfig
+   sh scripts/check-config.sh .config
    ```
+
+   只装用得到的 feed（`packages` / `luci` / `openclash` / `nss`）。stock `feeds.conf.default` 还带 `routing` / `telephony` / `video`，我们一个包都不用，`video` 还会把 qt5 拖进 kconfig 树、刷出一堆 recursive dependency 报错。
 
 2. **底座必须是 ppe-nss 分支**。RE-CS-02 支持是 2026-01 才进 main 的（commit `53a8e7b`，PR #19840），没 backport 到 25.12 稳定分支；而 NSS 的符号又只在 ppe-nss 变基分支里。换句话说：v25.12.x 编不出来（设备符号未知，被静默丢掉），openwrt main 编得出来但没有 offload。workflow 里钉的是 ppe-nss 的 commit SHA，升级时：
 
@@ -193,10 +209,24 @@ uci set nss-wifi.general.offload='0'; uci commit nss-wifi; reboot
    diff -u /tmp/old.expanded /tmp/new.expanded
    ```
 
-5. 构建见 `.github/workflows/build-binaries.yml`（ppe-nss 底座 + OpenClash feed + nss feed）。产物在 `bin/targets/qualcommax/ipq60xx/`：
+5. 构建见 `.github/workflows/build-binaries.yml`（ppe-nss 底座 + OpenClash / nss feed + ccache + dl 缓存）。
 
-   - `*-squashfs-sysupgrade.bin` —— 已经在跑 OpenWrt 时升级用，或 TFTP 进去之后 sysupgrade
-   - `*-initramfs*.itb` —— 首次刷机用，重命名为 `initramfs.itb` 放到 TFTP 服务器，U-Boot 里 `tftpboot initramfs.itb && bootm`
+**产物**（`bin/targets/qualcommax/ipq60xx/`，artifact 里就这几个文件）：
+
+| 文件 | 用途 |
+|---|---|
+| `openwrt-qualcommax-ipq60xx-jdcloud_re-cs-02-squashfs-sysupgrade.bin` | 已经在跑 OpenWrt 时升级，或 TFTP 进 initramfs 之后 `sysupgrade` |
+| `openwrt-qualcommax-ipq60xx-jdcloud_re-cs-02-initramfs-uImage.itb` | **首次刷机用这个**，重命名为 `initramfs.itb` 丢给 TFTP 服务器 |
+| `sha256sums` | 两份镜像的校验和 |
+| `profiles.json` | 目标/设备清单，排查刷错机型用 |
+
+注意 `.itb` 和 `.itb.gz` 是两个不同文件（后者只在 build_dir 里）：TFTP 要的是**没压缩的 `.itb`**，直接拿 `.gz` 给 `bootm` 会失败。刷之前先对一下校验和：
+
+```sh
+sha256sum -c sha256sums --ignore-missing
+```
+
+**构建缓存**：`openwrt/dl`（源码包）和 `openwrt/.ccache` 都走 `actions/cache`。ccache 由 `CONFIG_CCACHE=y` 打开，cache 目录固定为 `$(TOPDIR)/.ccache`，`CCACHE_MAXSIZE=2G`；两个缓存共用仓库 10 GB 配额，不够时会被 LRU 淘汰，所以第一次冷构建仍然慢。日志末尾的 `ccache stats` 能看命中率。
 
 6. 首次刷机（原厂固件 ≥ 4.3.0.r4211 时需要在 U-Boot 倒计时里输入 `jdmt018R` 打断自动启动）：
 
