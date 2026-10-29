@@ -226,7 +226,7 @@ uci set nss-wifi.general.offload='0'; uci commit nss-wifi; reboot
 sha256sum -c sha256sums --ignore-missing
 ```
 
-**构建缓存**：`openwrt/dl`（源码包）和 `openwrt/.ccache` 都走 `actions/cache`。ccache 由 `CONFIG_CCACHE=y` 打开，cache 目录固定为 `$(TOPDIR)/.ccache`，`CCACHE_MAXSIZE=2G`；两个缓存共用仓库 10 GB 配额，不够时会被 LRU 淘汰，所以第一次冷构建仍然慢。日志末尾的 `ccache stats` 能看命中率。
+**构建缓存**：`openwrt/dl`（源码包）和 `openwrt/.ccache` 都走 `actions/cache`。ccache 需要 `CONFIG_DEVEL=y` + `CONFIG_CCACHE=y`——`CCACHE` 的 prompt 是 `if DEVEL`，不开 `DEVEL` 时它是不可见符号，会被 defconfig 重新算成 n。cache 目录固定为 `$(TOPDIR)/.ccache`，`CCACHE_MAXSIZE=2G`；两个缓存共用仓库 10 GB 配额，不够时会被 LRU 淘汰，所以第一次冷构建仍然慢。日志末尾的 `ccache stats` 能看命中率。
 
 6. 首次刷机（原厂固件 ≥ 4.3.0.r4211 时需要在 U-Boot 倒计时里输入 `jdmt018R` 打断自动启动）：
 
